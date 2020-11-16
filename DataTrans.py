@@ -40,10 +40,10 @@ def Clean(E_csv,zone_dic):
 def Neighbors(subs):
     N_dict={}
     nodes=[]
-    if not os.path.isfile('data/Electric_Power_Transmission_Lines.geojson'):
+    if not os.path.isfile('data/unzip/Electric_Power_Transmission_Lines.geojson'):
         with zipfile.ZipFile('data/Electric_Power_Transmission_Lines.geojson.zip', 'r') as zip_ref:
-            zip_ref.extractall('data/')
-    with open('data/Electric_Power_Transmission_Lines.geojson','r',encoding='utf8')as fp:
+            zip_ref.extractall('data/unzip')
+    with open('data/unzip/Electric_Power_Transmission_Lines.geojson','r',encoding='utf8')as fp:
         data = json.load(fp)
     for i in range(len(data['features'])):
         sub1 = (data['features'][i]['properties'][ 'SUB_1'],format(data['features'][i]['geometry'][ 'coordinates'][0][0][1], '.3f'),format(data['features'][i]['geometry'][ 'coordinates'][0][0][0], '.3f'))
