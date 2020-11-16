@@ -12,6 +12,7 @@ import zipfile
 
 Max_Value = 3000
 Min_Value = 0
+coord_precision = '.9f'
 
 def get_Zone(Z_csv):
     zone=pd.read_csv(Z_csv)
@@ -46,10 +47,12 @@ def Neighbors(subs):
     with open('data/unzip/Electric_Power_Transmission_Lines.geojson','r',encoding='utf8')as fp:
         data = json.load(fp)
     for i in range(len(data['features'])):
-        sub1 = (data['features'][i]['properties'][ 'SUB_1'],format(data['features'][i]['geometry'][ 'coordinates'][0][0][1], '.3f'),format(data['features'][i]['geometry'][ 'coordinates'][0][0][0], '.3f'))
-        sub2 = (data['features'][i]['properties'][ 'SUB_2'],format(data['features'][i]['geometry'][ 'coordinates'][0][-1][1], '.3f'),format(data['features'][i]['geometry'][ 'coordinates'][0][-1][0], '.3f'))
+        sub1 = (format(data['features'][i]['geometry'][ 'coordinates'][0][0][1], coord_precision),format(data['features'][i]['geometry'][ 'coordinates'][0][0][0], coord_precision))
+        sub2 = (format(data['features'][i]['geometry'][ 'coordinates'][0][-1][1], coord_precision),format(data['features'][i]['geometry'][ 'coordinates'][0][-1][0], coord_precision))
    #     if((sub1 not in subs) or (sub2 not in subs)):
    #         continue
+        if (sub1 == sub2):
+            continue
         if(sub1 in N_dict):
             N_dict[sub1].append(sub2)
         else:
@@ -106,14 +109,14 @@ def InitKV(clean_data):
             if(Max_Vol < Max_Value and Max_Vol > Min_Value):
                 base_KV = Max_Vol
             else:
-                to_cal.append((row['NAME'],format(row['LATITUDE'], '.3f'),format(row['LONGITUDE'], '.3f')))
+                to_cal.append((format(row['LATITUDE'], coord_precision),format(row['LONGITUDE'], coord_precision)))
                 continue
         else:
             if(Max_Vol<Max_Value and Max_Vol>Min_Value):
                 base_KV = (Max_Vol + Min_Vol)/2
             else:
                 base_KV = Min_Vol
-        KV_dict[(row['NAME'],format(row['LATITUDE'], '.3f'),format(row['LONGITUDE'], '.3f'))] = base_KV
+        KV_dict[(row['NAME'],format(row['LATITUDE'], coord_precision),format(row['LONGITUDE'], coord_precision))] = base_KV
     return KV_dict, to_cal
 
 # Give a node, find its neighbors in 5 iteration
@@ -166,13 +169,16 @@ def Write_Bus(clean_data,zone_dic,KV_dict):
     bus = open('output/bus.csv','w',newline='')
     csv_writer = csv.writer(bus)
     csv_writer.writerow(["Bus_id","PD","Zone_id","base_KV"])
+    missingSub = [];
     for index, row in clean_data.iterrows():
-        sub =(row['NAME'],format(row['LATITUDE'], '.3f'),format(row['LONGITUDE'], '.3f'))
+        sub =(row['NAME'],format(row['LATITUDE'], coord_precision),format(row['LONGITUDE'], coord_precision))
         if(sub in KV_dict):
             csv_writer.writerow([row['ID'],0,zone_dic[row['STATE']],KV_dict[sub]])
         else:
-            print(sub)
+            missingSub.append(sub)
     bus.close()
+    print("INFO: ", len(missingSub), " substations excluded from the network. Some examples:")
+    print(missingSub[:20])
 
 
 #Write bus2sub.csv
@@ -194,11 +200,13 @@ def DataTransform(E_csv,T_csv,Z_csv):
     #Have not decided how to define subs. I will encapsulate it later.
     subs=[(0,0,0)]
     for index, row in clean_data.iterrows():
-        tuple=(row['NAME'],format(row['LATITUDE'], '.3f'),format(row['LONGITUDE'], '.3f'))
+        tuple=(row['NAME'],format(row['LATITUDE'], coord_precision),format(row['LONGITUDE'], coord_precision))
         subs.append(tuple)
         
     nodes, N_dict = Neighbors(subs)
     G = GraphOfNet(nodes, N_dict)
+    print("Island Detection: number of nodes in graph = ", len(G.nodes))
+    print("Island Detection: max island size = ", len(GetMaxIsland(G)))
     KV_dict,to_cal = InitKV(clean_data)
     KV_dict = Cal_KV(N_dict,G,KV_dict,to_cal)
     
