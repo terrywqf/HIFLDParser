@@ -73,7 +73,7 @@ def Neighbors(sub_by_coord_dict, sub_name_dict, raw_lines):
         # dist = meter2Mile(raw_lines['SHAPE_Length'][line_id])
         dist = computeGeoDist(start_coord, end_coord)
         vol = raw_lines['VOLTAGE'][line_id]
-        reactance = computeX(dist, vol)
+        reactance = computeReactance(dist, vol)
         rateA = computeRateA(vol)
         lines.append((line_id, sub_by_coord_dict.get(sub1)[0], sub_by_coord_dict.get(sub1)[1], sub_by_coord_dict.get(sub2)[0], sub_by_coord_dict.get(sub2)[1], reactance, rateA, dist))
 
@@ -98,12 +98,45 @@ def lineFromCSV(T_csv):
     raw_lines = raw_data.set_index('ID').to_dict()
     return raw_lines
 
-def computeX(dist, vol):
-    xperunit = 0.00002
+def computeReactance(dist, vol):
+    # Using reactance stat average
+    if vol <= 69:
+        xperunit = 0.009577022
+    elif vol <= 100:
+        xperunit = 0.006326449
+    elif vol <= 115:
+        xperunit = 0.003883246
+    elif vol <= 138:
+        xperunit = 0.002645748
+    elif vol <= 161:
+        xperunit = 0.002149416
+    elif vol <= 230:
+        xperunit = 0.001138218
+    elif vol <= 345:
+        xperunit = 0.000470854
+    elif vol <= 500:
+        xperunit = 0.000207784
+    else:
+        xperunit = 9.3815E-05
     return xperunit*dist
 
 def computeRateA(vol):
-    return 2000
+    # Using transmission line industry standard MVA
+    if vol <= 115:
+        rateA = 239
+    elif vol <= 138:
+        rateA = 382
+    elif vol <= 161:
+        rateA = 446
+    elif vol <= 230:
+        rateA = 797
+    elif vol <= 345:
+        rateA = 1793
+    elif vol <= 500:
+        rateA = 2598
+    else:
+        rateA = 5300
+    return rateA
 
 def meter2Mile(dist):
     return dist/1609.34
