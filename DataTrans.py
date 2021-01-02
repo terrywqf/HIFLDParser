@@ -3,12 +3,12 @@
 
 
 import pandas as pd
-import numpy as np
 import networkx as nx
 import csv
 import json
 import os.path
 import zipfile
+from haversine import haversine, Unit
 
 Max_Value = 3000
 Min_Value = 0
@@ -38,19 +38,45 @@ def Clean(E_csv,zone_dic):
 
 
 #Create dictionary to store neighbors of each sub
-def Neighbors(subs):
-    N_dict={}
-    nodes=[]
+def Neighbors(sub_by_coord_dict, sub_name_dict, raw_lines):
+    N_dict = {}
+    nodes = []
+    lines = []
+    missinglines = []
     if not os.path.isfile('data/unzip/Electric_Power_Transmission_Lines.geojson'):
         with zipfile.ZipFile('data/Electric_Power_Transmission_Lines.geojson.zip', 'r') as zip_ref:
             zip_ref.extractall('data/unzip')
     with open('data/unzip/Electric_Power_Transmission_Lines.geojson','r',encoding='utf8')as fp:
         data = json.load(fp)
     for i in range(len(data['features'])):
-        sub1 = (format(data['features'][i]['geometry'][ 'coordinates'][0][0][1], coord_precision),format(data['features'][i]['geometry'][ 'coordinates'][0][0][0], coord_precision))
-        sub2 = (format(data['features'][i]['geometry'][ 'coordinates'][0][-1][1], coord_precision),format(data['features'][i]['geometry'][ 'coordinates'][0][-1][0], coord_precision))
-   #     if((sub1 not in subs) or (sub2 not in subs)):
-   #         continue
+        line = data['features'][i]
+        line_id = line['properties']['ID']
+        if line['properties']['SUB_1'] == 'NOT AVAILABLE' or line['properties']['SUB_2'] == 'NOT AVAILABLE':
+            # quite a few of NOT AVAILABLE scenarios in transmission rawdata
+            print("INFO: sub1 or sub2 NOT AVAILABLE for transmission line: ", line)
+            missinglines.append(line)
+            continue
+
+        if line['properties']['SUB_1'] not in sub_name_dict or line['properties']['SUB_2'] not in sub_name_dict:
+            # e.g., ID 201978 with SUB2 UNKNOWN202219, never shown in substation rawdata
+            print("INFO: sub1 or sub2 name not identified for transmission line: ", line)
+            missinglines.append(line)
+            continue
+
+        start_coord = (line['geometry']['coordinates'][0][0][1], line['geometry']['coordinates'][0][0][0])
+        end_coord = (line['geometry']['coordinates'][0][-1][1], line['geometry']['coordinates'][0][-1][0])
+        candidate_coordinates = sub_name_dict.get(line['properties']['SUB_1']) + sub_name_dict.get(line['properties']['SUB_2'])
+
+        sub1 = min(candidate_coordinates, key=lambda p: computeGeoDist(p, start_coord))
+        sub2 = min(candidate_coordinates, key=lambda p: computeGeoDist(p, end_coord))
+
+        # dist = meter2Mile(raw_lines['SHAPE_Length'][line_id])
+        dist = computeGeoDist(start_coord, end_coord)
+        vol = raw_lines['VOLTAGE'][line_id]
+        reactance = computeReactance(dist, vol)
+        rateA = computeRateA(vol)
+        lines.append((line_id, sub_by_coord_dict.get(sub1)[0], sub_by_coord_dict.get(sub1)[1], sub_by_coord_dict.get(sub2)[0], sub_by_coord_dict.get(sub2)[1], reactance, rateA, dist))
+
         if (sub1 == sub2):
             continue
         if(sub1 in N_dict):
@@ -63,7 +89,60 @@ def Neighbors(subs):
         else:
             nodes.append(sub2)
             N_dict[sub2] = [sub1]
-    return nodes, N_dict
+    return lines, nodes, N_dict
+
+
+def lineFromCSV(T_csv):
+    raw_data = pd.read_csv(T_csv)
+    raw_data['ID'] = raw_data['ID'].astype('str')
+    raw_lines = raw_data.set_index('ID').to_dict()
+    return raw_lines
+
+def computeReactance(dist, vol):
+    # Using reactance stat average
+    if vol <= 69:
+        xperunit = 0.009577022
+    elif vol <= 100:
+        xperunit = 0.006326449
+    elif vol <= 115:
+        xperunit = 0.003883246
+    elif vol <= 138:
+        xperunit = 0.002645748
+    elif vol <= 161:
+        xperunit = 0.002149416
+    elif vol <= 230:
+        xperunit = 0.001138218
+    elif vol <= 345:
+        xperunit = 0.000470854
+    elif vol <= 500:
+        xperunit = 0.000207784
+    else:
+        xperunit = 9.3815E-05
+    return xperunit*dist
+
+def computeRateA(vol):
+    # Using transmission line industry standard MVA
+    if vol <= 115:
+        rateA = 239
+    elif vol <= 138:
+        rateA = 382
+    elif vol <= 161:
+        rateA = 446
+    elif vol <= 230:
+        rateA = 797
+    elif vol <= 345:
+        rateA = 1793
+    elif vol <= 500:
+        rateA = 2598
+    else:
+        rateA = 5300
+    return rateA
+
+def meter2Mile(dist):
+    return dist/1609.34
+
+def computeGeoDist(sub1, sub2):
+    return haversine(sub1, sub2, Unit.MILES)
 
 #create the graph for our Power Network
 def GraphOfNet(nodes, N_dict):
@@ -109,14 +188,14 @@ def InitKV(clean_data):
             if(Max_Vol < Max_Value and Max_Vol > Min_Value):
                 base_KV = Max_Vol
             else:
-                to_cal.append((format(row['LATITUDE'], coord_precision),format(row['LONGITUDE'], coord_precision)))
+                to_cal.append((row['LATITUDE'], row['LONGITUDE']))
                 continue
         else:
             if(Max_Vol<Max_Value and Max_Vol>Min_Value):
                 base_KV = (Max_Vol + Min_Vol)/2
             else:
                 base_KV = Min_Vol
-        KV_dict[(row['NAME'],format(row['LATITUDE'], coord_precision),format(row['LONGITUDE'], coord_precision))] = base_KV
+        KV_dict[(row['LATITUDE'], row['LONGITUDE'])] = base_KV
     return KV_dict, to_cal
 
 # Give a node, find its neighbors in 5 iteration
@@ -152,7 +231,21 @@ def Cal_KV(N_dict,G,KV_dict,to_cal):
             else:
                 KV_dict[sub] = -999999
     return KV_dict
-    
+
+
+def Set_Sub(E_csv):
+    sub_by_coord_dict = {}
+    sub_name_dict = {"sub": []}
+    raw_subs = pd.read_csv(E_csv)
+    for index, row in raw_subs.iterrows():
+        location = (row['LATITUDE'], row['LONGITUDE'])
+        if location in sub_by_coord_dict:
+            print("WARNING: substations coordinates conflict check:", location)
+        sub_by_coord_dict[location] = (row['ID'], row['NAME'])
+        if row['NAME'] not in sub_name_dict:
+            sub_name_dict[row['NAME']] = []
+        sub_name_dict[row['NAME']].append((row['LATITUDE'], row['LONGITUDE']))
+    return sub_by_coord_dict, sub_name_dict
 
 # Write sub.csv
 def Write_sub(clean_data,zone_dic):
@@ -171,7 +264,7 @@ def Write_Bus(clean_data,zone_dic,KV_dict):
     csv_writer.writerow(["Bus_id","PD","Zone_id","base_KV"])
     missingSub = [];
     for index, row in clean_data.iterrows():
-        sub =(row['NAME'],format(row['LATITUDE'], coord_precision),format(row['LONGITUDE'], coord_precision))
+        sub =(row['LATITUDE'], row['LONGITUDE'])
         if(sub in KV_dict):
             csv_writer.writerow([row['ID'],0,zone_dic[row['STATE']],KV_dict[sub]])
         else:
@@ -191,19 +284,25 @@ def Write_bus2sub(clean_data):
     bus2sub.close()
 
 
+#Write branch.csv
+def Write_branch(lines):
+    branch = open('output/branch.csv',  'w', newline='')
+    csv_writer = csv.writer(branch)
+    csv_writer.writerow(['branch_id', 'from_bus_id', 'from_bus_name', 'to_bus_id', 'to_bus_name', 'x', 'rateA', 'length_in_mile'])
+    csv_writer.writerows(lines)
+    branch.close()
+
+
 def DataTransform(E_csv,T_csv,Z_csv):
 
     zone_dic = get_Zone(Z_csv)
 
     clean_data = Clean(E_csv,zone_dic)
 
-    #Have not decided how to define subs. I will encapsulate it later.
-    subs=[(0,0,0)]
-    for index, row in clean_data.iterrows():
-        tuple=(row['NAME'],format(row['LATITUDE'], coord_precision),format(row['LONGITUDE'], coord_precision))
-        subs.append(tuple)
-        
-    nodes, N_dict = Neighbors(subs)
+    sub_by_coord_dict, sub_name_dict = Set_Sub(E_csv)
+    raw_lines = lineFromCSV(T_csv)
+
+    lines, nodes, N_dict = Neighbors(sub_by_coord_dict, sub_name_dict, raw_lines)
     G = GraphOfNet(nodes, N_dict)
     print("Island Detection: number of nodes in graph = ", len(G.nodes))
     print("Island Detection: max island size = ", len(GetMaxIsland(G)))
@@ -214,6 +313,7 @@ def DataTransform(E_csv,T_csv,Z_csv):
     Write_sub(clean_data,zone_dic)
     Write_Bus(clean_data,zone_dic,KV_dict)
     Write_bus2sub(clean_data)
+    Write_branch(lines)
 
 if __name__ == '__main__':
     DataTransform("data/Electric_Substations.csv","data/Electric_Power_Transmission_Lines.csv","data/zone.csv")
