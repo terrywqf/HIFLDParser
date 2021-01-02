@@ -132,7 +132,7 @@ def Plant(E_csv, U_csv, G2019_csv):
     Pmin = Cal_P(G2019_csv)
 
     type_dict = {}
-    type_data = pd.read_csv("type.csv")
+    type_data = pd.read_csv("data/type.csv")
     for index, row in type_data.iterrows():
         type_dict[row['TYPE']] = row['Type_code']
 
@@ -140,19 +140,6 @@ def Plant(E_csv, U_csv, G2019_csv):
     Write_gen(clean_data)
     
 Plant("data/Electric_Substations.csv", "data/General_Units.csv","data/Generator_Y2019.csv")
-clean_data = Clean("data/Electric_Substations.csv",zone_dic)
-LocOfsub_dict, ZipOfsub_dict = LocOfsub(clean_data)
-clean_data = Clean_p("data/General_Units.csv")
-Pmin = Cal_P("data/Generator_Y2019.csv")
-
-type_dict = {}
-type_data = pd.read_csv("data/type.csv")
-for index, row in type_data.iterrows():
-    type_dict[row['TYPE']] = row['Type_code']
-
-write_plant(clean_data, ZipOfsub_dict)
-Write_gen(clean_data)
-
 
 
 
