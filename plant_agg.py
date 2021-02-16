@@ -1,14 +1,8 @@
-
-
-
 import pandas as pd
 import numpy as np
-import networkx as nx
 import csv
-import json
-import os.path
-import zipfile
 from geopy.distance import geodesic
+from sklearn.linear_model import LinearRegression
 
 Max_Value = 3000
 Min_Value = 0
@@ -68,7 +62,20 @@ def Cal_P(G_csv):
     Pmin = {}
     csv_data = pd.read_csv(G_csv)
     for index, row in csv_data.iterrows():
-        Pmin[str(row["Plant Name"]).upper()] = row["Minimum Load (MW)"]
+        tu = (str(row["Plant Name"]).upper(),row['Energy Source 1'])
+        if(tu in Pmin):
+            cur = Pmin[tu]
+        else:
+            cur = 0.0
+        if(row["Minimum Load (MW)"] == ' '):
+            row["Minimum Load (MW)"] == 0.0
+        if(row["Energy Source 1"] == 'NUC'):
+            if(float(row["Minimum Load (MW)"]) > 0.9*min(float(row["Summer Capacity (MW)"]),float(row["Winter Capacity (MW)"]))):
+                Pmin[tu] = float(row["Minimum Load (MW)"]) + cur
+            else:
+                Pmin[tu] = 0.9*min(float(row["Summer Capacity (MW)"]),float(row["Winter Capacity (MW)"])) + cur
+        else:
+            Pmin[tu] = float(row["Minimum Load (MW)"]) + cur
     return Pmin
 
 #Get the lattitude and longitude of plants 
@@ -80,13 +87,49 @@ def Loc_of_plant():
         loc_of_plant[row['NAME']] = loc
     return loc_of_plant
 
+def LP(x_train, y_train):
+    model = LinearRegression()
+    x_train = np.array(x_train)
+    y_train = np.array(y_train)
+    x_train = x_train.reshape(-1,1)
+    y_train = y_train.reshape(-1,1)
+    model.fit(x_train,y_train)
+    score = model.score(x_train,y_train)
+    c = model.intercept_
+    m = model.coef_
+
+    return m, score
+
+def getCostCurve():
+    points = {}
+    csv_data = pd.read_csv("data/EIA923.csv")
+    df = np.array(csv_data)
+    cost = df.tolist()
+    for pla in cost:
+        name = (str(pla[3]).upper(), pla[14])
+        if (name in points):
+            x = points[name][0]
+            y = points[name][1]
+            for n in range(12):
+                x[n] = x[n] + float(pla[n+79])
+                y[n] = y[n] + float(pla[n+67])
+            points[name] = (x,y)
+        else:
+            x = [0.0]*12
+            y = [0.0]*12
+            for n in range(12):
+                x[n] = x[n] + float(pla[n+79])
+                y[n] = y[n] + float(pla[n+67])
+            points[name] = (x,y)
+    return points
+    
 def Plant_agg(clean_data,ZipOfsub_dict,loc_of_plant,LocOfsub_dict,Pmin):
     plant_dict = {}
   
     for index, row in clean_data.iterrows():
-        tu = (row['PLANT'],row['TYPE'])
+        tu = (row['PLANT'],row['PRIM_FUEL'])
         if(tu not in plant_dict):
-            if(row['PLANT'] in Pmin and row['PLANT'] in loc_of_plant):
+            if(tu in Pmin and row['PLANT'] in loc_of_plant):
                 if(row['ZIP'] in ZipOfsub_dict):
                     min_d = 100000.0
                     min_s = ""
@@ -96,7 +139,7 @@ def Plant_agg(clean_data,ZipOfsub_dict,loc_of_plant,LocOfsub_dict,Pmin):
                             min_s = value
                             min_d = geodesic(loc_of_plant[row['PLANT']],LocOfsub_dict[value]).m
                     bus_id = value
-                    pmin = Pmin[row['PLANT']]
+                    pmin = Pmin[tu]
             # if this zip does not contain subs, we try to find subs in neighbor zip.
                 else: 
                     zi = int(row['ZIP'])
@@ -122,7 +165,7 @@ def Plant_agg(clean_data,ZipOfsub_dict,loc_of_plant,LocOfsub_dict,Pmin):
     return plant_dict
 
 def write_plant(plant_dict):
-    plant = open('plant.csv','w',newline='')
+    plant = open('output/plant.csv','w',newline='')
     csv_writer = csv.writer(plant)
     csv_writer.writerow(["plant_id","bus_id","Pg","status","Pmax","Pmin","ramp_30","type"])
     for key in plant_dict:
@@ -130,12 +173,22 @@ def write_plant(plant_dict):
         csv_writer.writerow([key[0]+'-'+key[1],list1[0], 1, "OP", min(list1[1],list1[2]),list1[3],list1[3],key[1]])
     plant.close()
 
-def Write_gen(plant_dict):
-    gencost = open('gencost.csv','w',newline='')
+def Write_gen(plant_dict, points):
+    gencost = open('output/gencost.csv','w',newline='')
     csv_writer = csv.writer(gencost)
     csv_writer.writerow(["plant_id","type","n","c2","c1","c0"])
     for key in plant_dict:
-        csv_writer.writerow([key[0]+'-'+key[1],key[1],1,1,type_dict[key[1]],0])
+        if(key in points):
+            m, score = LP(points[key][0],points[key][1])
+            if(score > 0.95):
+                csv_writer.writerow([key[0]+'-'+key[1],key[1],1,0,m[0][0],0])
+            else:
+                if(sum(points[key][0]) != 0.0):
+                    csv_writer.writerow([key[0]+'-'+key[1],key[1],1,0,sum(points[key][1])/sum(points[key][0]),0])
+                else:
+                    csv_writer.writerow([key[0]+'-'+key[1],key[1],1,0,'none',0])
+        else:
+            csv_writer.writerow([key[0]+'-'+key[1],key[1],1,0,'none',0])
     gencost.close()
 
 def Plant(E_csv, U_csv, G2019_csv):
@@ -147,20 +200,15 @@ def Plant(E_csv, U_csv, G2019_csv):
     clean_data = Clean_p(U_csv)
     Pmin = Cal_P(G2019_csv)
 
-    type_dict = {}
-    type_data = pd.read_csv("data/type.csv")
-    for index, row in type_data.iterrows():
-        type_dict[row['TYPE']] = row['Type_code']
+    #type_dict = {}
+    #type_data = pd.read_csv("data/type.csv")
+    #for index, row in type_data.iterrows():
+    #    type_dict[row['TYPE']] = row['Type_code']
     plant_dict = Plant_agg(clean_data,ZipOfsub_dict,loc_of_plant,LocOfsub_dict,Pmin)
     write_plant(plant_dict)
-    Write_gen(plant_dict)
+    points = getCostCurve()
+    Write_gen(plant_dict, points)
 
 
-
-
-Plant("data/Electric_Substations.csv", "data/General_Units.csv","data/Generator_Y2019.csv")
-
-
-
-
-
+if __name__ == '__main__':
+    Plant("data/Electric_Substations.csv", "data/General_Units.csv","data/Generator_Y2019.csv")
