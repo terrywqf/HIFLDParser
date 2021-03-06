@@ -1,13 +1,11 @@
-#!/usr/bin/env python
-# coding: utf-8
-
-
 import pandas as pd
 import networkx as nx
 import csv
 import json
 import os.path
 import zipfile
+import numpy as np
+from geopy.distance import geodesic
 from haversine import haversine, Unit
 from collections import defaultdict
 
@@ -16,6 +14,44 @@ Max_Value = 3000
 Min_Value = 0
 coord_precision = '.9f'
 default_base_kv = -999999.0
+
+West = ['WA','OR','CA','NV','AK','ID','UT','AZ','WY','CO','NM']
+Uncertain = ['MT','SD','TX']
+
+def ZipOfloc():
+    LocOfpla_dict = {}
+    ZipOfpla_dict = {}
+    csv_data = pd.read_csv("data/Power_Plants.csv")
+    for index, row in csv_data.iterrows():
+        loc = (format(row['LATITUDE'], coord_precision),format(row['LONGITUDE'], coord_precision))
+        pla = row['NAME']
+        zi = row['ZIP']
+        LocOfpla_dict[pla] = loc
+        if(zi in ZipOfpla_dict):
+            list1 = ZipOfpla_dict[zi]
+            list1.append(pla)
+            ZipOfpla_dict[zi] = list1
+        else:
+            list1 = [pla]
+            ZipOfpla_dict[zi] = list1
+    return LocOfpla_dict, ZipOfpla_dict
+
+def Getregion():
+    region = {}
+    csv_data = pd.read_csv("data/needs.csv")
+    df = np.array(csv_data)
+    needs = df.tolist()
+    for pla in needs:
+        name = (str(pla[0]).upper())
+        if (name not in region):
+            if(pla[8][0:3] == 'ERC'):
+                re = 'ERCOT'
+            elif(pla[8][0:3] == 'WEC'):
+                re = 'Western'
+            else:
+                re = 'Eastern'
+            region[name] = re
+    return region
 
 def get_Zone(Z_csv):
     zone=pd.read_csv(Z_csv)
@@ -212,12 +248,44 @@ def Set_Sub(E_csv):
     return sub_by_coord_dict, sub_name_dict
 
 # Write sub.csv
-def Write_sub(clean_data,zone_dic):
+def Write_sub(clean_data,zone_dic,ZipOfpla_dict,LocOfpla_dict,region):
     sub = open('output/sub.csv','w',newline='')
     csv_writer = csv.writer(sub)
-    csv_writer.writerow(["sub_id","sub_name","lat","lon","zone_id","type"])
+    csv_writer.writerow(["sub_id","sub_name","lat","lon","zone_id","type","region"])
     for index, row in clean_data.iterrows():
-        csv_writer.writerow([row['ID'],row['NAME'],row['LATITUDE'],row['LONGITUDE'],zone_dic[row['STATE']],row['TYPE']])
+        if(row['STATE'] in West):
+            re = 'Western'
+        elif(row['STATE'] in Uncertain):
+            lo = (row['LATITUDE'],row['LONGITUDE'])
+            if(row['ZIP'] in ZipOfpla_dict):
+                min_d = 100000.0
+                min_s = ""
+                for value in ZipOfpla_dict[row['ZIP']]:
+                # calculate the distance between the plant and substations
+                    if(geodesic(lo,LocOfpla_dict[value]).m < min_d):
+                        min_s = value
+                        min_d = geodesic(lo,LocOfpla_dict[value]).m
+                if(min_s in region):
+                    re = region[min_s]
+                else:
+                    re = 'Uncertain'
+            else: 
+                zi = int(row['ZIP'])
+                for i in range(-5,6):
+                    min_d = 100000.0
+                    min_s = ""
+                    if(str(zi+i) in ZipOfpla_dict):
+                        for value in ZipOfpla_dict[str(zi+i)]:
+                            if(geodesic(lo,LocOfpla_dict[value]).m < min_d):
+                                min_s = value
+                                min_d = geodesic(lo,LocOfpla_dict[value]).m
+                if(min_s in region):
+                    re = region[min_s]
+                else:
+                    re = 'Uncertain'
+        else:
+            re = 'Eastern'
+        csv_writer.writerow([row['ID'],row['NAME'],row['LATITUDE'],row['LONGITUDE'],zone_dic[row['STATE']],row['TYPE'],re])
     sub.close()
 
 
@@ -422,12 +490,13 @@ def DataTransform(E_csv, T_csv, Z_csv):
     KV_dict = Cal_KV(N_dict,G, KV_dict, to_cal)
     bus_id_to_kv = get_bus_id_to_KV(clean_data, KV_dict)
     calculate_reactance_and_rateA(bus_id_to_kv, lines, raw_lines)
+    LocOfpla_dict, ZipOfpla_dict = ZipOfloc()
+    region = Getregion()
 
-    Write_sub(clean_data, zone_dic)
+    Write_sub(clean_data,zone_dic,ZipOfpla_dict,LocOfpla_dict,region)
     Write_Bus(clean_data, zone_dic, KV_dict)
     Write_bus2sub(clean_data)
     Write_branch(lines)
 
 if __name__ == '__main__':
     DataTransform("data/Electric_Substations.csv", "data/Electric_Power_Transmission_Lines.csv", "data/zone.csv")
-
